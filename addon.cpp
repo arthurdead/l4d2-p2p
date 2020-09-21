@@ -1,3 +1,7 @@
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
+
 #include "CDetour/detours.h"
 #include "memoryutils.h"
 #include <sourcehook/sourcehook.h>
@@ -163,20 +167,20 @@ public:
 	virtual ESteamCnxType GetCnxType() = 0;
 
 	virtual void OpenSocket( int s, int nModule, int nSetPort, int nDefaultPort, const char *pName, int nProtocol, bool bTryAny ) = 0;
-	virtual void CloseSocket( int s, int nModule ) = 0;
+	virtual void CloseSocket( int s ) = 0;
 
-	virtual int sendto( int s, const char * buf, int len, int flags, const ns_address &to ) = 0;
-	virtual int recvfrom( int s, char * buf, int len, int flags, ns_address * from ) = 0;
+	virtual int sendto( int s, const char * buf, int len, int flags, const struct sockaddr * to, int unk ) = 0;
+	virtual int recvfrom( int s, char * buf, int len, int flags, struct sockaddr * from, int * unk ) = 0;
 
-	virtual uint64 GetSteamIDForRemote( const ns_address &remote ) = 0;
+	virtual uint64 GetSteamIDForRemote( const netadr_t &remote ) = 0;
 };
 
-SH_DECL_HOOK5(ISteamSocketMgr, sendto, SH_NOATTRIB, 0, int, int, const char *, int, int, const ns_address &);
-SH_DECL_HOOK5(ISteamSocketMgr, recvfrom, SH_NOATTRIB, 0, int, int, char *, int, int, ns_address *);
-SH_DECL_HOOK0(ISteamSocketMgr, GetCnxType, SH_NOATTRIB, 0, ISteamSocketMgr::ESteamCnxType);
+SH_DECL_HOOK6(ISteamSocketMgr, sendto, SH_NOATTRIB, 0, int, int, const char *, int, int, const struct sockaddr *, int);
+SH_DECL_HOOK6(ISteamSocketMgr, recvfrom, SH_NOATTRIB, 0, int, int, char *, int, int, struct sockaddr *, int *);
 SH_DECL_HOOK7_void(ISteamSocketMgr, OpenSocket, SH_NOATTRIB, 0, int, int, int, int, const char *, int, bool);
-SH_DECL_HOOK2_void(ISteamSocketMgr, CloseSocket, SH_NOATTRIB, 0, int, int);
-SH_DECL_HOOK1(ISteamSocketMgr, GetSteamIDForRemote, SH_NOATTRIB, 0, uint64, const ns_address &);
+SH_DECL_HOOK1_void(ISteamSocketMgr, CloseSocket, SH_NOATTRIB, 0, int);
+SH_DECL_HOOK1(ISteamSocketMgr, GetSteamIDForRemote, SH_NOATTRIB, 0, uint64, const netadr_t &);
+SH_DECL_HOOK0(ISteamSocketMgr, GetCnxType, SH_NOATTRIB, 0, ISteamSocketMgr::ESteamCnxType);
 SH_DECL_HOOK0_void(ISteamSocketMgr, Init, SH_NOATTRIB, 0);
 SH_DECL_HOOK0_void(ISteamSocketMgr, Shutdown, SH_NOATTRIB, 0);
 
@@ -268,6 +272,34 @@ static ConVar net_steamcnx_enabled( "net_steamcnx_enabled", "1", FCVAR_RELEASE, 
 static ConVar net_steamcnx_allowrelay( "net_steamcnx_allowrelay", "1", FCVAR_RELEASE | FCVAR_ARCHIVE, "Allow steam connections to attempt to use relay servers as fallback (best if specified on command line:  +net_steamcnx_allowrelay 1)" );
 
 #define OnlyUseSteamSockets() false
+
+void SockAddrToNetAdr( const struct sockaddr *s, netadr_t *a )
+{
+	if (s->sa_family == AF_INET)
+	{
+		a->type = NA_IP;
+		*(int *)&a->ip = ((const struct sockaddr_in *)s)->sin_addr.s_addr;
+		a->port = ((const struct sockaddr_in *)s)->sin_port;
+	}
+}
+
+void NetAdrToSockAddr (const netadr_t *a, struct sockaddr *s)
+{
+	memset (s, 0, sizeof(*s));
+
+	if (a->type == NA_BROADCAST)
+	{
+		((struct sockaddr_in *)s)->sin_family = AF_INET;
+		((struct sockaddr_in *)s)->sin_port = a->port;
+		((struct sockaddr_in *)s)->sin_addr.s_addr = INADDR_BROADCAST;
+	}
+	else if (a->type == NA_IP)
+	{
+		((struct sockaddr_in *)s)->sin_family = AF_INET;
+		((struct sockaddr_in *)s)->sin_addr.s_addr = *(int *)&a->ip;
+		((struct sockaddr_in *)s)->sin_port = a->port;
+	}
+}
 
 class CSteamSocketMgr : public ISteamSocketMgr
 {
@@ -362,16 +394,17 @@ public:
 
 		RETURN_META(MRES_SUPERCEDE);
 	}
-	virtual void CloseSocket( int s, int nModule ) OVERRIDE
+	virtual void CloseSocket( int s ) OVERRIDE
 	{
 		ISteamSocketMgr *pThis = META_IFACEPTR(ISteamSocketMgr);
 
-		SH_CALL(pThis, &ISteamSocketMgr::CloseSocket)(s, nModule);
+		SH_CALL(pThis, &ISteamSocketMgr::CloseSocket)(s);
 
 		if ( !IsValid() )
 			RETURN_META(MRES_SUPERCEDE);
 
-		ESocketIndex_t eSocketType = ESocketIndex_t( nModule );
+		#pragma message "what do i do about this"
+		ESocketIndex_t eSocketType = NS_CLIENT;//ESocketIndex_t( nModule );
 		if ( !IsSteamSocketType( eSocketType ) )
 			RETURN_META(MRES_SUPERCEDE);
 
@@ -399,8 +432,11 @@ public:
 		RETURN_META(MRES_SUPERCEDE);
 	}
 
-	virtual int sendto( int s, const char * buf, int len, int flags, const ns_address &to ) OVERRIDE
+	virtual int sendto( int s, const char * buf, int len, int flags, const struct sockaddr *addr, int unk) OVERRIDE
 	{
+		ns_address to;
+		SockAddrToNetAdr(addr, &to.m_adr);
+
 		if ( !to.IsType<netadr_t>() )
 		{
 			Warning( "WARNING: sendto: don't know how to send to non-IP address '%s'\n", ns_address_render( to ).String() );
@@ -453,17 +489,20 @@ public:
 
 		ISteamSocketMgr *pThis = META_IFACEPTR(ISteamSocketMgr);
 
-		int ret = SH_CALL(pThis, &ISteamSocketMgr::sendto)(s, buf, len, flags, to);
+		int ret = SH_CALL(pThis, &ISteamSocketMgr::sendto)(s, buf, len, flags, addr, unk);
 		RETURN_META_VALUE(MRES_SUPERCEDE, ret);
 	}
 
-	virtual int recvfrom( int s, char * buf, int len, int flags, ns_address *from ) OVERRIDE
+	virtual int recvfrom( int s, char * buf, int len, int flags, struct sockaddr *addr, int * unk ) OVERRIDE
 	{
+		ns_address from;
+		SockAddrToNetAdr(addr, &from.m_adr);
+
 		if ( !OnlyUseSteamSockets() )
 		{
 			ISteamSocketMgr *pThis = META_IFACEPTR(ISteamSocketMgr);
 
-			int ret = SH_CALL(pThis, &ISteamSocketMgr::recvfrom)(s, buf, len, flags, from);
+			int ret = SH_CALL(pThis, &ISteamSocketMgr::recvfrom)(s, buf, len, flags, addr, unk);
 			if(ret) {
 				RETURN_META_VALUE(MRES_SUPERCEDE, ret);
 			}
@@ -535,7 +574,7 @@ public:
 		}
 
 		// got data.. update params
-		*from = ns_address( pSocket->GetNetAddress() );
+		NetAdrToSockAddr(&pSocket->GetNetAddress(), addr);
 
 		if ( net_steamcnx_debug.GetInt() >= 3 )
 		{
@@ -545,8 +584,11 @@ public:
 		RETURN_META_VALUE(MRES_SUPERCEDE, cubMsg);
 	}
 
-	virtual uint64 GetSteamIDForRemote( const ns_address &remote ) OVERRIDE
+	virtual uint64 GetSteamIDForRemote( const netadr_t &addr ) OVERRIDE
 	{
+		ns_address remote;
+		remote.m_adr = addr;
+
 		const CSteamSocket *pSocket = FindSocketForAddress( remote );
 		if ( pSocket )
 		{
@@ -799,16 +841,16 @@ void LogOnAnonymous()
 {
 	g_pGameServer = META_IFACEPTR(ISteamGameServer);
 
-	if(g_binActivate) {
+	//if(g_binActivate) {
 		const char *str  = sv_glsttoken.GetString();
 		if(str[0] != '\0') {
 			g_pGameServer->LogOn(str);
 		} else {
 			SH_CALL(g_pGameServer, &ISteamGameServer::LogOnAnonymous)();
 		}
-	} else {
+	/*} else {
 		SH_CALL(g_pGameServer, &ISteamGameServer::LogOnAnonymous)();
-	}
+	}*/
 
 	RETURN_META(MRES_SUPERCEDE);
 }
@@ -822,9 +864,7 @@ ISteamGameServer *GetISteamGameServer(HSteamUser u, HSteamPipe p, const char *v)
 	if(ret) {
 		g_pGameServer = ret;
 
-		if(g_binActivate) {
-			SH_ADD_HOOK(ISteamGameServer, LogOnAnonymous, ret, SH_STATIC(LogOnAnonymous), false);
-		}
+		SH_ADD_HOOK(ISteamGameServer, LogOnAnonymous, ret, SH_STATIC(LogOnAnonymous), false);
 	}
 
 	RETURN_META_VALUE(MRES_SUPERCEDE, ret);
@@ -1259,9 +1299,9 @@ bool CEmptyServerPlugin::Load(CreateInterfaceFn interfaceFactory, CreateInterfac
 
 	g_pMatchmaking = g_pSteamClient->GetISteamMatchmaking( hSteamUser, hSteamPipe, STEAMMATCHMAKING_INTERFACE_VERSION );
 
-	g_pGameServer = g_pSteamClient->GetISteamGameServer( hSteamUser, hSteamPipe, STEAMGAMESERVER_INTERFACE_VERSION );
-
 	SH_ADD_HOOK(ISteamClient, GetISteamGameServer, g_pSteamClient, SH_STATIC(GetISteamGameServer), false);
+
+	g_pGameServer = g_pSteamClient->GetISteamGameServer( hSteamUser, hSteamPipe, STEAMGAMESERVER_INTERFACE_VERSION );
 
 	Dl_info info;
 	dladdr((void *)interfaceFactory, &info);

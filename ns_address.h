@@ -544,20 +544,20 @@ public:
 		switch ( a.m_AddrType )
 		{
 		case NSAT_NETADR:
-			V_snprintf( m_buf, 64, "%s", a.m_adr.ToString() );
+			V_snprintf( m_buf, 64, "netadr %s", a.m_adr.ToString() );
 			break;
 
 		case NSAT_P2P:
-			V_snprintf( m_buf, 64, "%s:%d", a.m_steamID.ToString(), a.m_steamID.GetSteamChannel() );
+			V_snprintf( m_buf, 64, "p2p %s:%d", a.m_steamID.ToString(), a.m_steamID.GetSteamChannel() );
 			break;
 
 		case NSAT_PROXIED_CLIENT:
 		case NSAT_PROXIED_GAMESERVER:
-			V_snprintf( m_buf, 64, "=%s:%d", a.m_steamID.ToString(), a.m_steamID.GetSteamChannel() );
+			V_snprintf( m_buf, 64, "proxy =%s:%d", a.m_steamID.ToString(), a.m_steamID.GetSteamChannel() );
 			break;
 
 		default:
-			m_buf[0] = '\0';
+			V_snprintf( m_buf, 64, "unknown %i ,%s %s:%d", a.m_AddrType, a.m_adr.ToString(), a.m_steamID.ToString(), a.m_steamID.GetSteamChannel() );
 		};
 	}
 	const char *String() const { return m_buf; }
