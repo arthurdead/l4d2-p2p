@@ -1,0 +1,92 @@
+# vim: set sts=2 ts=8 sw=2 tw=99 et ft=python:
+import os, sys
+
+projectName = "l4d2_p2p"
+
+sourceFiles = [
+	"addon.cpp",
+	"steamid.cpp",
+	"CDetour/detours.cpp",
+	os.path.join(builder.options.sm_path,"public/asm/asm.c"),
+	os.path.join(builder.options.sm_path,"public/libudis86/decode.c"),
+	os.path.join(builder.options.sm_path,"public/libudis86/itab.c"),
+	os.path.join(builder.options.sm_path,"public/libudis86/syn-att.c"),
+	os.path.join(builder.options.sm_path,"public/libudis86/syn-intel.c"),
+	os.path.join(builder.options.sm_path,"public/libudis86/syn.c"),
+	os.path.join(builder.options.sm_path,"public/libudis86/udis86.c"),
+	os.path.join(builder.options.mms_path,"core/sourcehook/sourcehook_hookmangen.cpp"),
+	os.path.join(builder.options.mms_path,"core/sourcehook/sourcehook_impl_chookidman.cpp"),
+	os.path.join(builder.options.mms_path,"core/sourcehook/sourcehook_impl_chookmaninfo.cpp"),
+	os.path.join(builder.options.mms_path,"core/sourcehook/sourcehook_impl_cproto.cpp"),
+	os.path.join(builder.options.mms_path,"core/sourcehook/sourcehook_impl_cvfnptr.cpp"),
+	os.path.join(builder.options.mms_path,"core/sourcehook/sourcehook.cpp"),
+]
+
+project = Extension.HL2Project(builder, projectName)
+
+project.sources += sourceFiles
+
+project.compiler.defines += [
+	"_CRT_SECURE_NO_WARNINGS","DBGFLAG_H","RAD_TELEMETRY_DISABLED",
+	"SERVER_DLL","GAME_DLL","NEXT_BOT","NEXTBOT",
+	"GLOWS_ENABLE",
+	"LEFT4DEAD","TERROR",
+	"PLATFORM_X86"
+]
+
+if project.compiler.like('msvc'):
+	project.compiler.cxxflags += [
+		"/wd4005","PLATFORM_WINDOWS",
+	]
+elif project.compiler.like('gcc') or project.compiler.like('clang'):
+	project.compiler.cxxflags += [
+		"-Wno-class-memaccess",
+	]
+	project.compiler.defines += [
+		"_LINUX","LINUX",
+		"_POSIX","POSIX",
+		"GNUC","COMPILER_GCC",
+		"_alloca=alloca",
+		"swap=V_swap",
+		"typeof(x)=std::declval<x>()",
+		"max=MAX",
+		"Clamp=clamp",
+		"PLATFORM_POSIX",
+	]
+
+for sdk_name in Extension.sdks:
+	sdk = Extension.sdks[sdk_name]
+
+	project.sources += [
+		os.path.join(sdk.path,"tier1/interface.cpp"),
+		os.path.join(sdk.path,"tier1/convar.cpp"),
+		os.path.join(sdk.path,"tier1/utlbuffer.cpp"),
+		os.path.join(sdk.path,"tier1/NetAdr.cpp"),
+		os.path.join(sdk.path,"tier1/strtools.cpp"),
+		os.path.join(sdk.path,"tier1/characterset.cpp"),
+		os.path.join(sdk.path,"tier1/utlstring.cpp"),
+	]
+
+	project.compiler.includes += [
+		sdk.path,
+		#os.path.join(builder.options.steam_sdk,"public"),
+		os.path.join(sdk.path,"public"),
+		os.path.join(sdk.path,"public/steam"),
+		os.path.join(sdk.path,"public/tier0"),
+		os.path.join(sdk.path,"public/tier1"),
+		os.path.join(builder.options.sm_path,"public"),
+		os.path.join(builder.options.sm_path,"public/jit"),
+		os.path.join(builder.options.sm_path,"public/libudis86"),
+		os.path.join(builder.options.sm_path,"public/asm"),
+		os.path.join(builder.options.sm_path,"sourcepawn/include"),
+		os.path.join(builder.options.mms_path,"core"),
+		os.path.join(builder.options.mms_path,"core/sourcehook"),
+	]
+
+	project.compiler.linkflags += [
+		builder.options.steam_api,
+	]
+
+	binary = Extension.HL2Config(project, projectName, sdk)
+
+Extension.extensions = builder.Add(project)
